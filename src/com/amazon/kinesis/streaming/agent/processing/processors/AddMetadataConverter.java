@@ -21,13 +21,18 @@ import java.util.Map;
 import java.util.TimeZone;
 import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.List;
+
+import org.slf4j.LoggerFactory;
 
 import com.amazon.kinesis.streaming.agent.ByteBuffers;
 import com.amazon.kinesis.streaming.agent.config.Configuration;
 import com.amazon.kinesis.streaming.agent.processing.exceptions.DataConversionException;
 import com.amazon.kinesis.streaming.agent.processing.interfaces.IDataConverter;
 import com.amazon.kinesis.streaming.agent.processing.interfaces.IJSONPrinter;
+import com.amazon.kinesis.streaming.agent.processing.interfaces.ILogParser;
 import com.amazon.kinesis.streaming.agent.processing.utils.ProcessingUtilsFactory;
+import com.amazon.kinesis.streaming.agent.processing.exceptions.LogParsingException;
 
 /**
  * Build record as JSON object with a "metadata" key for arbitrary KV pairs
@@ -35,7 +40,7 @@ import com.amazon.kinesis.streaming.agent.processing.utils.ProcessingUtilsFactor
  *
  * Configuration looks like:
  *
- * { 
+ * {
  *   "optionName": "ADDMETADATA",
  *   "timestamp": "true/false",
  *   "metadata": {
@@ -54,11 +59,17 @@ public class AddMetadataConverter implements IDataConverter {
     private Object metadata;
     private Boolean timestamp;
     private final IJSONPrinter jsonProducer;
+    private List<String> fields;
+    private ILogParser logParser;
 
     public AddMetadataConverter(Configuration config) {
       metadata = config.getConfigMap().get("metadata");
       timestamp = new Boolean((String) config.getConfigMap().get("timestamp"));
       jsonProducer = ProcessingUtilsFactory.getPrinter(config);
+      logParser = ProcessingUtilsFactory.getLogParser(config);
+      if (config.containsKey(ProcessingUtilsFactory.CUSTOM_FIELDS_KEY)) {
+         fields = config.readList(ProcessingUtilsFactory.CUSTOM_FIELDS_KEY, String.class);
+      }
     }
 
     @Override
@@ -70,7 +81,7 @@ public class AddMetadataConverter implements IDataConverter {
         if (dataStr.endsWith(NEW_LINE)) {
             dataStr = dataStr.substring(0, (dataStr.length() - NEW_LINE.length()));
         }
-        
+
         if (timestamp.booleanValue()) {
             TimeZone tz = TimeZone.getTimeZone("UTC");
             DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
@@ -79,7 +90,16 @@ public class AddMetadataConverter implements IDataConverter {
         }
 
         recordMap.put("metadata", metadata);
-        recordMap.put("data", dataStr);
+
+        try {
+            recordMap.put("data", logParser.parseLogRecord(dataStr, fields));
+        } catch (LogParsingException e) {
+            // ignore the record if a LogParsingException is thrown
+            // the record is filtered out in this case
+        	LoggerFactory.getLogger(getClass()).debug("Getting exception while parsing record: [" + dataStr
+                    + "], record will be skipped", e);
+            return null;
+        }
 
         String dataJson = jsonProducer.writeAsString(recordMap) + NEW_LINE;
         return ByteBuffer.wrap(dataJson.getBytes(StandardCharsets.UTF_8));
