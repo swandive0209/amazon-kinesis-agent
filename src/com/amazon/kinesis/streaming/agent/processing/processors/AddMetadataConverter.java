@@ -24,15 +24,16 @@ import java.util.LinkedHashMap;
 import java.util.List;
 
 import org.slf4j.LoggerFactory;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 
 import com.amazon.kinesis.streaming.agent.ByteBuffers;
 import com.amazon.kinesis.streaming.agent.config.Configuration;
 import com.amazon.kinesis.streaming.agent.processing.exceptions.DataConversionException;
 import com.amazon.kinesis.streaming.agent.processing.interfaces.IDataConverter;
 import com.amazon.kinesis.streaming.agent.processing.interfaces.IJSONPrinter;
-import com.amazon.kinesis.streaming.agent.processing.interfaces.ILogParser;
 import com.amazon.kinesis.streaming.agent.processing.utils.ProcessingUtilsFactory;
-import com.amazon.kinesis.streaming.agent.processing.exceptions.LogParsingException;
+
 
 /**
  * Build record as JSON object with a "metadata" key for arbitrary KV pairs
@@ -60,13 +61,11 @@ public class AddMetadataConverter implements IDataConverter {
     private Boolean timestamp;
     private final IJSONPrinter jsonProducer;
     private List<String> fields;
-    private ILogParser logParser;
 
     public AddMetadataConverter(Configuration config) {
       metadata = config.getConfigMap().get("metadata");
       timestamp = new Boolean((String) config.getConfigMap().get("timestamp"));
       jsonProducer = ProcessingUtilsFactory.getPrinter(config);
-      logParser = ProcessingUtilsFactory.getLogParser(config);
       if (config.containsKey(ProcessingUtilsFactory.CUSTOM_FIELDS_KEY)) {
          fields = config.readList(ProcessingUtilsFactory.CUSTOM_FIELDS_KEY, String.class);
       }
@@ -75,33 +74,33 @@ public class AddMetadataConverter implements IDataConverter {
     @Override
     public ByteBuffer convert(ByteBuffer data) throws DataConversionException {
 
-        final Map<String, Object> recordMap = new LinkedHashMap<String, Object>();
         String dataStr = ByteBuffers.toString(data, StandardCharsets.UTF_8);
 
         if (dataStr.endsWith(NEW_LINE)) {
             dataStr = dataStr.substring(0, (dataStr.length() - NEW_LINE.length()));
         }
 
+        ObjectMapper mapper = new ObjectMapper();
+        TypeReference<LinkedHashMap<String,Object>> typeRef =
+          new TypeReference<LinkedHashMap<String,Object>>() {};
+
+        LinkedHashMap<String,Object> dataObj = null;
+        try {
+          dataObj = mapper.readValue(dataStr, typeRef);
+        } catch (Exception ex) {
+          throw new DataConversionException("Error converting json source data to map", ex);
+        }
+
+        // Appending metadata
         if (timestamp.booleanValue()) {
             TimeZone tz = TimeZone.getTimeZone("UTC");
             DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
             dateFormat.setTimeZone(tz);
-            recordMap.put("ts", dateFormat.format(new Date()));
+            dataObj.put("ts", dateFormat.format(new Date()));
         }
+        dataObj.put("metadata", metadata);
 
-        recordMap.put("metadata", metadata);
-
-        try {
-            recordMap.put("data", logParser.parseLogRecord(dataStr, fields));
-        } catch (LogParsingException e) {
-            // ignore the record if a LogParsingException is thrown
-            // the record is filtered out in this case
-        	LoggerFactory.getLogger(getClass()).debug("Getting exception while parsing record: [" + dataStr
-                    + "], record will be skipped", e);
-            return null;
-        }
-
-        String dataJson = jsonProducer.writeAsString(recordMap) + NEW_LINE;
+        String dataJson = jsonProducer.writeAsString(dataObj) + NEW_LINE;
         return ByteBuffer.wrap(dataJson.getBytes(StandardCharsets.UTF_8));
     }
 
