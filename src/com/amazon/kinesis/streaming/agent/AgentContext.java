@@ -95,7 +95,8 @@ public class AgentContext extends AgentConfiguration implements IMetricsContext 
             instanceTag = EC2MetadataUtils.getInstanceId();
             if (Strings.isNullOrEmpty(instanceTag)) {
                 try {
-                    instanceTag = InetAddress.getLocalHost().getHostName();
+                    //instanceTag = InetAddress.getLocalHost().getHostName();
+                    instanceTag = System.getenv("HOST_ID");
                 } catch (UnknownHostException e) {
                     LOGGER.error("Cannot determine host name, instance tagging in CloudWatch metrics will be skipped.");
                 }
